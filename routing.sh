@@ -206,7 +206,7 @@ ip route del default > /dev/null 2>&1
 #  This is a dirty hack.  Because the IP address associated with the PPP interface
 #  takes a little while to start and is not guaranteed to ever exist we edit the config file
 #  to take the status of this interface in to account.  SSHD won't start if *all* of the
-#  interfaces it needs to bind to are up.  This means we can't rely on init starting SSH sucessfully.
+#  interfaces it needs to bind to are not up.  This means we can't rely on init starting SSH sucessfully.
 #  Which leaves us stranded on a headless box as we can't ssh in to fix it.
 
 log "Sorting out SSHD..." 0
