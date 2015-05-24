@@ -1,0 +1,65 @@
+# iptables based on the output from the fault tolerant router project
+# https://github.com/drsound/fault_tolerant_router
+#
+# Hacked some more by Will Cooke
+# 29 April 2015
+# @8none1
+#
+# Using iptables-restore automatically clears any previously loaded chains.
+
+*mangle
+:PREROUTING ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+
+##Mark packets based on interface
+[0:0] -A PREROUTING -i eth1 -j CONNMARK --restore-mark
+[0:0] -A PREROUTING -i ppp1 -m conntrack --ctstate NEW -j CONNMARK --set-mark 1
+[0:0] -A PREROUTING -i eth0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 2
+[0:0] -A POSTROUTING -o ppp1 -m conntrack --ctstate NEW -j CONNMARK --set-mark 1
+[0:0] -A POSTROUTING -o eth0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 2
+
+COMMIT
+
+
+*nat
+:PREROUTING ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+
+#SNAT: LAN --> WAN
+[0:0] -A POSTROUTING -o ppp1 -j SNAT --to-source 212.159.20.70
+[0:0] -A POSTROUTING -o eth0 -j SNAT --to-source 192.168.1.253
+
+COMMIT
+
+
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+:LAN_WAN - [0:0]
+:WAN_LAN - [0:0]
+
+[0:0] -A INPUT -i lo -j ACCEPT
+[0:0] -A INPUT -i eth1 -j ACCEPT
+[0:0] -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+## Allow connections to port 443 on the WAN interface
+[0:0] -A INPUT -p tcp --dport 443 -i ppp1 -j ACCEPT
+
+## Allow pings to the WAN interface from the internet
+#[0:0] -A INPUT -p icmp --icmp-type 8 -s 0/0 -d 212.159.20.70 -m state --state NEW,ESTABLISHED,RELATED -j ACCEPT
+[0:0] -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+[0:0] -A FORWARD -i eth1 -o ppp1 -j LAN_WAN
+[0:0] -A FORWARD -i eth1 -o eth0 -j LAN_WAN
+[0:0] -A FORWARD -i ppp1 -o eth1 -j WAN_LAN
+[0:0] -A FORWARD -i eth0 -o eth1 -j WAN_LAN
+
+## Clamp MSS (ideal for PPPoE connections)
+[0:0] -I FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+[0:0] -A LAN_WAN -j ACCEPT
+[0:0] -A WAN_LAN -j REJECT
+
+COMMIT
