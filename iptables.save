@@ -30,7 +30,10 @@ COMMIT
 
 #SNAT: LAN --> WAN
 [0:0] -A POSTROUTING -o ppp1 -j SNAT --to-source 212.159.20.70
-[0:0] -A POSTROUTING -o eth0 -j SNAT --to-source 192.168.1.253
+## This is from when we used to have the talktalk router doing NAT so we double NATed. Need to write this NAT
+## in the shell script now as the source is dynamic.
+#[0:0] -A POSTROUTING -o eth0 -j SNAT --to-source 192.168.1.253
+#[0:0] -A POSTROUTING -o eth0 -j SNAT --to-source 92.18.127.108
 
 COMMIT
 
@@ -46,8 +49,10 @@ COMMIT
 [0:0] -A INPUT -i eth1 -j ACCEPT
 [0:0] -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
-## Allow connections to port 443 on the WAN interface
+## Allow connections to services on the WAN interface
 [0:0] -A INPUT -p tcp --dport 443 -i ppp1 -j ACCEPT
+[0:0] -A INPUT -p tcp --dport 80  -i ppp1 -j ACCEPT
+[0:0] -A INPUT -p tcp --dport 801 -i ppp1 -j ACCEPT
 
 ## Allow pings to the WAN interface from the internet
 #[0:0] -A INPUT -p icmp --icmp-type 8 -s 0/0 -d 212.159.20.70 -m state --state NEW,ESTABLISHED,RELATED -j ACCEPT
@@ -61,5 +66,22 @@ COMMIT
 [0:0] -I FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 [0:0] -A LAN_WAN -j ACCEPT
 [0:0] -A WAN_LAN -j REJECT
+
+## Block internal clients from getting out
+# Block IP camera from reaching the internet
+[0:0] -I FORWARD -s 192.168.42.35 -j DROP
+# Block DEAD ZONE ips
+[0:0] -I FORWARD -s 192.168.42.200 -j DROP
+[0:0] -I FORWARD -s 192.168.42.201 -j DROP
+[0:0] -I FORWARD -s 192.168.42.202 -j DROP
+[0:0] -I FORWARD -s 192.168.42.203 -j DROP
+[0:0] -I FORWARD -s 192.168.42.204 -j DROP
+[0:0] -I FORWARD -s 192.168.42.205 -j DROP
+[0:0] -I FORWARD -s 192.168.42.206 -j DROP
+[0:0] -I FORWARD -s 192.168.42.207 -j DROP
+[0:0] -I FORWARD -s 192.168.42.208 -j DROP
+[0:0] -I FORWARD -s 192.168.42.209 -j DROP
+[0:0] -I FORWARD -s 192.168.42.210 -j DROP
+
 
 COMMIT

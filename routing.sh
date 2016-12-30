@@ -94,6 +94,16 @@ function get_ppp_gateway() {
   return $GOTIP
 }
 
+function get_dhcpclient_gateway() {
+  #  Attempts to recover the default gateway provided by the DHCP server
+  #  from the leases file, not from the current routing table.  This is
+  #  because the current routing table could have been editied by this script
+  #  already and not be valid.  The last entry in the leases file should be
+  #  the one we want.
+  local leaserouter=`tac /var/lib/dhcp/dhclient.$1.leases | grep router -m 1`
+  DHCPGW=`echo $leaserouter | awk -F'[; ]' '{ print $3 }'`
+  return 0
+}
 
 
 
@@ -102,7 +112,8 @@ function get_ppp_gateway() {
 # to load them because it takes care of clearing all the old rules for you.
 log "Loading IP tables rules..." 0
 iptables-restore /home/pi/iptables/iptables.save
-
+# Also need to add some dynamic rules to take in to account the changing talktalk address
+# This needs to be done after we know our IP address, not here.
 
 # Get the local gateway address for the PPPoE connection
 # This can change even though the WAN IP address is static.
@@ -124,7 +135,7 @@ if [ $? = 0 ]; then
   fi
 fi
 
-# Do the same for the TalkTalk interface which has a fixed IP
+# Do the same for the TalkTalk interface which has a dynamic IP
 TTINT="eth0"
 TTINT_STATUS=false
 
@@ -136,25 +147,36 @@ if [ $? = 0 ]; then
   if [ $? = 0 ]; then
     TT_IPADDR=$IPADDR
     log "got $TT_IPADDR" 1
-    log "Creating TalkTalk routing table" 1
-    ip route del default table talktalk > /dev/null 2>&1
-    ip route add default via 192.168.1.254 dev $TTINT src 192.168.1.253 table talktalk
-    TTINT_STATUS=true
+    get_dhcpclient_gateway $TTINT
+    if [ $? = 0 ]; then
+      log "Got DHCP gateway IP: $DHCPGW" 1
+      log "Creating TalkTalk routing table" 1
+      ip route del default table talktalk > /dev/null 2>&1
+      ## This was from when we had a talktalk router.  Need to change this to support direct connection now
+      #ip route add default via 192.168.1.254 dev $TTINT src 192.168.1.253 table talktalk
+      ip route add default via $DHCPGW dev $TTINT src $TT_IPADDR table talktalk
+      TTINT_STATUS=true
+    fi
   fi
 fi
 
 # Create the load balanced routing table now
 ip route del default table loadbal > /dev/null 2>&1
 if [[ "$TTINT_STATUS" == "true" && "$PPPINT_STATUS" == "true" ]]; then
-  ip route add default table loadbal nexthop via $GWADDR dev $PPPINT weight 1 nexthop via 192.168.1.254 dev $TTINT weight 1
+  ip route add default table loadbal nexthop via $GWADDR dev $PPPINT weight 1 nexthop via $DHCPGW dev $TTINT weight 1
 elif [[ "$TTINT_STATUS" == "true" && "$PPPINT_STATUS" == "false" ]]; then
-  ip route add default table loadbal via 192.168.1.254 dev $TTINT weight 1
+  ip route add default table loadbal via $DHCPGW dev $TTINT weight 1
 elif [[ "$TTINT_STATUS" == "false" && "$PPPINT_STATUS" == "true" ]]; then
   ip route add default table loadbal via $GWADDR dev $PPPINT
 else
   log "Meh - something went wrong.  Bad luck." 0
   exit 1
 fi
+
+# Add dynamic iptables rules now since we should know all our IP addresses at this point
+#[0:0] -A POSTROUTING -o eth0 -j SNAT --to-source 92.18.127.108
+log "Adding dynamic iptables rules..." 0
+iptables -t nat -A POSTROUTING -o $TTINT -j SNAT --to-source $TT_IPADDR
 
 # Create the ip rules
 # ip rule add from 10.222.21.12 table plusnet pref 40100
@@ -165,7 +187,7 @@ ip rule del pref 40200 > /dev/null 2>&1
 ip rule del pref 40300 > /dev/null 2>&1
 ip rule del pref 40400 > /dev/null 2>&1
 ip rule add from $PPP_IPADDR table plusnet pref 40000
-ip rule add from 192.168.1.253 table talktalk pref 40100
+ip rule add from $TT_IPADDR table talktalk pref 40100
 ip rule add fwmark 0x1 table plusnet pref 40200
 ip rule add fwmark 0x2 table talktalk pref 40300
 ip rule add from 0/0 table loadbal pref 40400
@@ -176,28 +198,32 @@ ip rule add from 0/0 table loadbal pref 40400
 # out of a single route (so that Unblock US works properly)
 # Only required for Chromecasts, but meh
 
-log "Creating the Netflix hacks..." 0
-NETFLIX=plusnet
-START_NETFLIX_RANGE=51
-END_NETFLIX_RANGE=60
-START_PREF=38000
+#log "Creating the Netflix hacks..." 0
+#NETFLIX=plusnet
+#START_NETFLIX_RANGE=51
+#END_NETFLIX_RANGE=70
+#START_PREF=38000
 
-while [ $START_NETFLIX_RANGE -le $END_NETFLIX_RANGE ]
-do
-  log "Doing 192.168.42.$START_NETFLIX_RANGE" 1
-  ip rule del prio $START_PREF > /dev/null 2>&1
-  ip rule add from 192.168.42.$START_NETFLIX_RANGE table $NETFLIX prio $START_PREF
-  iptables -t nat -D PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 8.8.8.8 -p udp --dport 53 -j DNAT --to 192.168.42.254 > /dev/null 2>&1
-  iptables -t nat -D PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 8.8.4.4 -p udp --dport 53 -j DNAT --to 192.168.42.254 > /dev/null 2>&1
-  iptables -t nat -D PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 208.67.222.222 -p udp --dport 53 -j DNAT --to 192.168.42.254 > /dev/null 2>&1
-  iptables -t nat -D PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 209.244.0.3 -p udp --dport 53 -j DNAT --to 192.168.42.254 > /dev/null 2>&1
-  iptables -t nat -A PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 8.8.8.8 -p udp --dport 53 -j DNAT --to 192.168.42.254
-  iptables -t nat -A PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 8.8.4.4 -p udp --dport 53 -j DNAT --to 192.168.42.254
-  iptables -t nat -A PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 208.67.222.222 -p udp --dport 53 -j DNAT --to 192.168.42.254
-  iptables -t nat -A PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 209.244.0.3 -p udp --dport 53 -j DNAT --to 192.168.42.254
-  START_NETFLIX_RANGE=$[$START_NETFLIX_RANGE+1]
-  START_PREF=$[$START_PREF+1]
-done
+#while [ $START_NETFLIX_RANGE -le $END_NETFLIX_RANGE ]
+#do
+#  log "Doing 192.168.42.$START_NETFLIX_RANGE" 1
+#  ip rule del prio $START_PREF > /dev/null 2>&1
+#  ip rule add from 192.168.42.$START_NETFLIX_RANGE table $NETFLIX prio $START_PREF
+#  iptables -t nat -D PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 8.8.8.8 -p udp --dport 53 -j DNAT --to 192.168.42.254 > /dev/null 2>&1
+#  iptables -t nat -D PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 8.8.4.4 -p udp --dport 53 -j DNAT --to 192.168.42.254 > /dev/null 2>&1
+#  iptables -t nat -D PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 208.67.222.222 -p udp --dport 53 -j DNAT --to 192.168.42.254 > /dev/null 2>&1
+#  iptables -t nat -D PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 209.244.0.3 -p udp --dport 53 -j DNAT --to 192.168.42.254 > /dev/null 2>&1
+#  iptables -t nat -A PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 8.8.8.8 -p udp --dport 53 -j DNAT --to 192.168.42.254
+#  iptables -t nat -A PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 8.8.4.4 -p udp --dport 53 -j DNAT --to 192.168.42.254
+#  iptables -t nat -A PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 208.67.222.222 -p udp --dport 53 -j DNAT --to 192.168.42.254
+#  iptables -t nat -A PREROUTING -s 192.168.42.$START_NETFLIX_RANGE/32 -d 209.244.0.3 -p udp --dport 53 -j DNAT --to 192.168.42.254
+#  START_NETFLIX_RANGE=$[$START_NETFLIX_RANGE+1]
+#  START_PREF=$[$START_PREF+10]
+#done
+
+log "Adding static destination based routing..." 0
+# Start numbering these rules at pref 39000
+#ip rule add from 192.168.42.100 to 104.131.112.55 table $NETFLIX prio 39010
 
 log "Removing main default route..." 0
 ip route del default > /dev/null 2>&1
@@ -209,10 +235,12 @@ ip route del default > /dev/null 2>&1
 #  interfaces it needs to bind to are not up.  This means we can't rely on init starting SSH sucessfully.
 #  Which leaves us stranded on a headless box as we can't ssh in to fix it.
 
+
+SSHPORT=801
 log "Sorting out SSHD..." 0
 if [ "$PPPINT_STATUS" = "true" ]; then
   log "PPP interface is up.  Enabling SSH on $PPPINT" 1
-  sed -i "s/^#-PPP-INT-GOES-HERE.-AUTOMATICALLY-EDITED-DO-NOT-CHANGE-THIS-LINE-#$/ListenAddress $PPP_IPADDR:443/g" /etc/ssh/sshd_config
+  sed -i "s/^#-PPP-INT-GOES-HERE.-AUTOMATICALLY-EDITED-DO-NOT-CHANGE-THIS-LINE-#$/ListenAddress $PPP_IPADDR:$SSHPORT/g" /etc/ssh/sshd_config
 fi
 log "Restarting SSH..." 1
 /etc/init.d/ssh restart
@@ -221,7 +249,7 @@ log "Restarting DNSMASQ..." 1
 
 log "Reverting changes in file for next boot..." 1
 ## Safe to do this anyway, because it will only match the exact string from above or do nothing
-SED_ARG="s/^ListenAddress $PPP_IPADDR:443$/#-PPP-INT-GOES-HERE.-AUTOMATICALLY-EDITED-DO-NOT-CHANGE-THIS-LINE-#/g"
+SED_ARG="s/^ListenAddress $PPP_IPADDR:$SSHPORT$/#-PPP-INT-GOES-HERE.-AUTOMATICALLY-EDITED-DO-NOT-CHANGE-THIS-LINE-#/g"
 eval sed -i \"$SED_ARG\" /etc/ssh/sshd_config
 
 log "Spreading network queues across cores..." 0
