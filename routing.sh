@@ -1,4 +1,13 @@
 #!/bin/bash
+### BEGIN INIT INFO
+# Provides:          apache2
+# Required-Start:    $local_fs $remote_fs $network $syslog $named
+# Required-Stop:     $local_fs $remote_fs $network $syslog $named
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# X-Interactive:     true
+# Short-Description: Start/stop apache2 web server
+### END INIT INFO
 #
 #
 #  Set up multi path routing along with connection marking
@@ -44,7 +53,7 @@ function is_interface_up() {
         LINK=0
         break
     else
-      log "\nInterface $1 is not active.  Waiting and checking again... ($COUNT/$RETRIES)" $2 -n
+      log "Interface $1 is not active.  Waiting and checking again... ($COUNT/$RETRIES)" $2 -n
       sleep $SLEEP
     fi
   done
@@ -61,7 +70,7 @@ function get_interface_ip() {
     let COUNT=COUNT+1
     IPADDR=`ip addr show dev $INTERFACE | awk -F'[ /]*' '/inet /{print $3}'`
     if [ ${#IPADDR} -lt 6 ]; then
-      log "\nNo IP found.  Waiting and checking again... ($COUNT/$RETRIES)" $2 -n
+      log "No IP found.  Waiting and checking again... ($COUNT/$RETRIES)" $2 -n
       sleep $SLEEP
     else
       log "Found IP: $IPADDR" $2
@@ -105,7 +114,28 @@ function get_dhcpclient_gateway() {
   return 0
 }
 
+function get_ips_for_hostname(){
+  # echo the ip addresses for a hostname
+  local ips=`host $1 | grep "has address" | awk '{print $4}'`
+  echo "$ips"
+}
 
+function add_to_routing_table(){
+  log "Adding static routes for $1 via $3" 2
+  local hostname=$1
+  local table=$2
+  local interface=$3
+  get_interface_ip $interface
+  local interface_ip=$IPADDR
+  for ip in `get_ips_for_hostname $1`;
+  do
+    log "Host: $1  IP: $ip" 3
+    ip route add $ip via $interface_ip dev $interface table $table
+  done
+  log "Done" 0
+}
+
+log "Starting router setup script..." 0
 
 # Load iptables rules.
 # It's easier to manage the rules in a seperate file and then use iptables-restore
@@ -173,19 +203,17 @@ else
   exit 1
 fi
 
-# Add dynamic iptables rules now since we should know all our IP addresses at this point
-#[0:0] -A POSTROUTING -o eth0 -j SNAT --to-source 92.18.127.108
-log "Adding dynamic iptables rules..." 0
-iptables -t nat -A POSTROUTING -o $TTINT -j SNAT --to-source $TT_IPADDR
-
 # Create the ip rules
 # ip rule add from 10.222.21.12 table plusnet pref 40100
 log "Creating the rules tables..." 0
+ip rule del pref 39900 > /dev/null 2>&1
 ip rule del pref 40000 > /dev/null 2>&1
 ip rule del pref 40100 > /dev/null 2>&1
 ip rule del pref 40200 > /dev/null 2>&1
 ip rule del pref 40300 > /dev/null 2>&1
 ip rule del pref 40400 > /dev/null 2>&1
+
+ip rule add from all table vpn_hubert pref 39900
 ip rule add from $PPP_IPADDR table plusnet pref 40000
 ip rule add from $TT_IPADDR table talktalk pref 40100
 ip rule add fwmark 0x1 table plusnet pref 40200
@@ -193,11 +221,47 @@ ip rule add fwmark 0x2 table talktalk pref 40300
 ip rule add from 0/0 table loadbal pref 40400
 
 
+# Add static routes here for the *main* table
+# Don't have to use the main table but it makes it a bit easier to find.
+log "Creating static routing entries..." 0
+log "Hubert" 2
+# Make sure that the VPN always takes the same route, makes it easier to add a firewall rule
+ip route add 104.131.59.210 via $GWADDR dev ppp1 table main
+log "Done with static routes."
+
+log "Pausing to give VPNs a chance to start and connect...." 0
+for i in `seq 10 -1 1`
+do
+  log $i 0 -n
+  sleep 1
+done
+log ".. carry on." 0
+
+# Add dynamic iptables rules now since we should know all our IP addresses at this point
+#[0:0] -A POSTROUTING -o eth0 -j SNAT --to-source 92.18.127.108
+log "Adding dynamic iptables rules..." 0
+iptables -t nat -A POSTROUTING -o $TTINT -j SNAT --to-source $TT_IPADDR
+
+# Add static routes to the VPN tables
+log "Setting up VPN routes..." 0
+is_interface_up tun0 1
+if [ $? = 0 ]; then
+  log "Adding Firewall and NAT rules..." 1
+  iptables -t filter -A FORWARD -i eth1 -o tun0 -j LAN_WAN
+  iptables -t nat -A POSTROUTING -o tun0 -j SNAT --to-source 10.8.0.10
+  log "Adding custom routes..." 1
+  add_to_routing_table thepiratebay.org vpn_hubert tun0
+else
+  log "Interface tun0 not up. Can't add static routes" 1
+fi
+
+log "Done" 0
+
+
 
 # Re-direct Google DNS to this machine for Netflix clients and direct Netflix clients
 # out of a single route (so that Unblock US works properly)
 # Only required for Chromecasts, but meh
-
 #log "Creating the Netflix hacks..." 0
 #NETFLIX=plusnet
 #START_NETFLIX_RANGE=51
@@ -220,10 +284,6 @@ ip rule add from 0/0 table loadbal pref 40400
 #  START_NETFLIX_RANGE=$[$START_NETFLIX_RANGE+1]
 #  START_PREF=$[$START_PREF+10]
 #done
-
-log "Adding static destination based routing..." 0
-# Start numbering these rules at pref 39000
-#ip rule add from 192.168.42.100 to 104.131.112.55 table $NETFLIX prio 39010
 
 log "Removing main default route..." 0
 ip route del default > /dev/null 2>&1
