@@ -2,7 +2,7 @@
 # https://github.com/drsound/fault_tolerant_router
 #
 # Hacked some more by Will Cooke
-# 29 April 2015
+# 17 April 2018
 # @8none1
 #
 # Using iptables-restore automatically clears any previously loaded chains.
@@ -16,9 +16,9 @@
 ##Mark packets based on interface
 [0:0] -A PREROUTING -i eth1 -j CONNMARK --restore-mark
 [0:0] -A PREROUTING -i ppp1 -m conntrack --ctstate NEW -j CONNMARK --set-mark 1
-[0:0] -A PREROUTING -i eth0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 2
+[0:0] -A PREROUTING -i ppp2 -m conntrack --ctstate NEW -j CONNMARK --set-mark 2
 [0:0] -A POSTROUTING -o ppp1 -m conntrack --ctstate NEW -j CONNMARK --set-mark 1
-[0:0] -A POSTROUTING -o eth0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 2
+[0:0] -A POSTROUTING -o ppp2 -m conntrack --ctstate NEW -j CONNMARK --set-mark 2
 
 COMMIT
 
@@ -27,6 +27,13 @@ COMMIT
 :PREROUTING ACCEPT [0:0]
 :POSTROUTING ACCEPT [0:0]
 :OUTPUT ACCEPT [0:0]
+
+#DNAT: WAN --> LAN
+# Allow SIP from specific hosts.  Specifying host names here which will be hardcoded in the
+# hosts file just in case DNS isn't up yet.
+[0:0] -A PREROUTING -i ppp1 -p udp -m udp --dport 5060 -s voip.canonical.com -j DNAT --to-destination 192.168.42.100
+[0:0] -A PREROUTING -i ppp1 -p udp -m udp --dport 5060 -s sipgate.co.uk -j DNAT --to-destination 192.168.42.100
+
 
 #SNAT: LAN --> WAN
 [0:0] -A POSTROUTING -o ppp1 -j SNAT --to-source 212.159.20.70
@@ -58,9 +65,11 @@ COMMIT
 #[0:0] -A INPUT -p icmp --icmp-type 8 -s 0/0 -d 212.159.20.70 -m state --state NEW,ESTABLISHED,RELATED -j ACCEPT
 [0:0] -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 [0:0] -A FORWARD -i eth1 -o ppp1 -j LAN_WAN
-[0:0] -A FORWARD -i eth1 -o eth0 -j LAN_WAN
+[0:0] -A FORWARD -i eth1 -o ppp2 -j LAN_WAN
+#[0:0] -A FORWARD -i eth1 -o tun0 -j LAN_WAN # Let's do this via a VPN script
 [0:0] -A FORWARD -i ppp1 -o eth1 -j WAN_LAN
-[0:0] -A FORWARD -i eth0 -o eth1 -j WAN_LAN
+[0:0] -A FORWARD -i ppp2 -o eth1 -j WAN_LAN
+
 
 ## Clamp MSS (ideal for PPPoE connections)
 [0:0] -I FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
