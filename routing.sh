@@ -199,7 +199,7 @@ if [ $? = 0 ]; then
   if [ $? = 0 ]; then
     log "Creating Plusnet routing table" 0
     ip route del default table plusnet > /dev/null 2>&1
-    ip route add default via $PLUSNET_GWADDR dev $PLUSNETINT src $PLUSNET_IPADDR table plusnet
+    ip route add default via $PLUSNET_GW dev $PLUSNETINT src $PLUSNET_IPADDR table plusnet
     PLUSNETINT_STATUS=true
   fi
 fi
@@ -362,6 +362,12 @@ echo 4 > /sys/class/net/eth1.1000/queues/tx-0/xps_cpus
 echo 4 > /sys/class/net/eth1.1000/queues/rx-0/rps_cpus
 echo 8 > /sys/class/net/ppp1/queues/tx-0/xps_cpus
 echo 8 > /sys/class/net/ppp1/queues/rx-0/rps_cpus
+
+# For some reason the ppp1 to plusnet is now setting its mtu to 1500 all the time
+ifconfig ppp1 mtu 1492
+
+log "Running shady site script..."
+/home/pi/iptables/unblock_site.sh
 
 log "And we are done." 0
 exit 0
