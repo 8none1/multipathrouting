@@ -367,7 +367,7 @@ echo 8 > /sys/class/net/ppp1/queues/rx-0/rps_cpus
 ifconfig ppp1 mtu 1492
 
 log "Running shady site script..."
-/home/pi/iptables/unblock_site.sh
+/home/pi/iptables/vpn_routing.sh
 
 log "And we are done." 0
 exit 0
